@@ -11,7 +11,11 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
+// Khởi tạo Firebase
 const app = initializeApp(firebaseConfig);
+
+// Dòng kiểm tra (Đặt ở đây mới đúng cú pháp)
+console.log("Dự án đang chạy với Project ID:", import.meta.env.VITE_FIREBASE_PROJECT_ID);
 
 export const db = getFirestore(app);
 export const auth = getAuth(app);
