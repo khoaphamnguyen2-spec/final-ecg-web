@@ -5,7 +5,7 @@
       <div class="login-card">
         <div class="login-icon">⚕️</div>
         <h2>CLINICAL LOGIN</h2>
-        <p>BME Real-Time ECG & Monitoring System</p>
+        <p>BME Real-Time Monitoring System</p>
         <div class="input-group">
           <input v-model="email" type="email" placeholder="Email bác sĩ..." />
           <input v-model="password" type="password" placeholder="Mật khẩu..." @keyup.enter="login" />
@@ -26,9 +26,8 @@
             <div class="patient-inputs">
               <label>Tên Bệnh nhân:</label>
               <input v-model="patientName" placeholder="Tên..." />
-              <label>ID Bệnh nhân (Khớp với Python):</label>
-              <!-- Khi đổi ID này, Python sẽ tự nhận diện -->
-              <input v-model="patientID" @change="syncSession" placeholder="ID (ví dụ: P001)..." />
+              <label>ID Bệnh nhân:</label>
+              <input v-model="patientID" @change="syncSession" placeholder="ID (ví dụ: BN0005)..." />
               <button @click="syncSession" class="sync-btn">CẬP NHẬT PHIÊN</button>
             </div>
           </div>
@@ -42,14 +41,14 @@
         </div>
 
         <div v-if="currentTab === 'monitor'" class="alerts-section">
-          <h3>⚠️ CẢNH BÁO GẦN ĐÂY (ID: {{patientID}})</h3>
+          <h3>⚠️ CẢNH BÁO (ID: {{patientID}})</h3>
           <div class="records-list">
             <div v-for="(record, index) in notableRecords" :key="index" class="record-card">
               <div class="record-time">{{ record.timestamp }}</div>
               <div class="record-data">❤️ {{ record.bpm }} BPM | 🩸 {{ record.spo2 }}%</div>
               <div class="record-status">{{ record.status }}</div>
             </div>
-            <div v-if="notableRecords.length === 0" class="no-data">Không có cảnh báo cho ID này</div>
+            <div v-if="notableRecords.length === 0" class="no-data">Không có cảnh báo</div>
           </div>
         </div>
       </aside>
@@ -57,8 +56,8 @@
       <main class="main-content">
         <template v-if="currentTab === 'monitor'">
           <header class="main-header">
-            <h1>GIÁM SÁT REAL-TIME: {{ patientID }}</h1>
-            <div class="status-bar"><span class="dot"></span> ĐANG KẾT NỐI ARDUINO</div>
+            <h1>HỆ THỐNG GIÁM SÁT: {{ patientID }}</h1>
+            <div class="status-bar"><span class="dot"></span> ĐANG NHẬN DỮ LIỆU TỪ ARDUINO</div>
           </header>
 
           <div class="stats-grid">
@@ -80,12 +79,15 @@
             </div>
           </div>
 
+          <!-- BIỂU ĐỒ IR THỰC TẾ (THAY CHO ECG GIẢ) -->
           <div class="chart-container main-ecg">
             <div class="chart-header">
-              <h3>Live Lead II ECG Waveform</h3>
+              <h3>Real-Time Infrared (IR) Waveform - Sóng mạch thực</h3>
               <button class="save-btn" @click="saveSnapshot">☁️ Lưu hồ sơ Firestore</button>
             </div>
-            <div class="ecg-canvas-wrapper"><canvas id="ecgCanvas"></canvas></div>
+            <div class="ecg-canvas-wrapper">
+              <canvas id="irChart"></canvas>
+            </div>
           </div>
 
           <div class="trend-grid">
@@ -150,15 +152,12 @@ const password = ref('');
 const currentTab = ref('monitor');
 
 const patientName = ref('Guest');
-const patientID = ref('guest'); // Mặc định khớp với Python
-const stats = ref({ bpm: 0, spo2: 0, temp: 0, motion: 0 });
+const patientID = ref('guest');
+const stats = ref({ bpm: 0, spo2: 0, temp: 0, motion: 0, ir: 0 });
 const notableRecords = ref([]);
 const historyRecords = ref([]);
 
-let ecgChart, bpmTrendChart, spo2TrendChart;
-let ecgInterval;
-const ecgPattern = [0, 0, 0.1, 0, -0.1, 1.5, -0.4, 0, 0.2, 0.4, 0.2, 0, 0, 0, 0];
-let patternIdx = 0;
+let irChart, bpmTrendChart, spo2TrendChart;
 
 // --- ĐĂNG NHẬP ---
 const login = async () => {
@@ -167,7 +166,6 @@ const login = async () => {
   try {
     await signInWithEmailAndPassword(auth, email.value, password.value);
     isLoggedIn.value = true;
-    syncSession(); // Bắt đầu lắng nghe dữ liệu
   } catch (error) {
     alert("Lỗi đăng nhập: " + error.message);
   } finally {
@@ -175,32 +173,25 @@ const login = async () => {
   }
 };
 
-// --- ĐỒNG BỘ VỚI PYTHON ---
+// --- ĐỒNG BỘ VỚI PYTHON & FIREBASE ---
 const syncSession = () => {
   if (!isLoggedIn.value) return;
-  
-  // 1. Cập nhật ID bệnh nhân đang khám lên Firebase để bridge.py nhận diện
   set(dbRef(rtdb, 'active_session'), patientID.value);
   
-  // 2. Ngắt các listener cũ (nếu có) để tránh tràn bộ nhớ khi đổi bệnh nhân
-  off(dbRef(rtdb, `patients`));
-  
-  // 3. Lắng nghe dữ liệu Live từ thư mục bệnh nhân cụ thể (Khớp bridge.py)
+  // Ngắt kết nối cũ trước khi lắng nghe ID mới
+  off(dbRef(rtdb, `patients/${patientID.value}/live`));
+
   onValue(dbRef(rtdb, `patients/${patientID.value}/live`), (snap) => {
     const data = snap.val();
     if (data) {
       stats.value = data;
-      updateTrendCharts(data);
+      updateAllCharts(data);
     }
   });
 
-  // 4. Lắng nghe hồ sơ cảnh báo (Khớp bridge.py)
   onValue(dbRef(rtdb, `patients/${patientID.value}/notable_records`), (snap) => {
-    if (snap.val()) {
-      notableRecords.value = Object.values(snap.val()).reverse().slice(0, 10);
-    } else {
-      notableRecords.value = [];
-    }
+    if (snap.val()) notableRecords.value = Object.values(snap.val()).reverse().slice(0, 10);
+    else notableRecords.value = [];
   });
 };
 
@@ -210,19 +201,56 @@ const logout = () => {
   location.reload();
 };
 
-// --- VẼ BIỂU ĐỒ ---
-const initTrendCharts = () => {
-  const commonOptions = { responsive: true, maintainAspectRatio: false, animation: false, scales: { x: { display: false } }, plugins: { legend: { display: false } } };
-  
-  if (bpmTrendChart) bpmTrendChart.destroy();
-  if (spo2TrendChart) spo2TrendChart.destroy();
+// --- KHỞI TẠO BIỂU ĐỒ ---
+const initCharts = () => {
+  const commonOptions = { 
+    responsive: true, 
+    maintainAspectRatio: false, 
+    animation: false, 
+    plugins: { legend: { display: false } },
+    scales: { x: { display: false } }
+  };
 
+  // 1. Biểu đồ IR (Sóng mạch thực tế)
+  const ctxIr = document.getElementById('irChart');
+  if (irChart) irChart.destroy();
+  irChart = new Chart(ctxIr, {
+    type: 'line',
+    data: { 
+      labels: Array(100).fill(''), 
+      datasets: [{ 
+        data: Array(100).fill(null), 
+        borderColor: '#2ecc71', 
+        borderWidth: 2, 
+        pointRadius: 0, 
+        tension: 0.3,
+        fill: true,
+        backgroundColor: 'rgba(46, 204, 113, 0.1)'
+      }] 
+    },
+    options: { 
+      ...commonOptions, 
+      scales: { 
+        y: { 
+          beginAtZero: false, 
+          grace: '10%',
+          grid: { color: 'rgba(0,0,0,0.05)' }
+        },
+        x: { display: false }
+      } 
+    }
+  });
+
+  // 2. Biểu đồ xu hướng BPM
+  if (bpmTrendChart) bpmTrendChart.destroy();
   bpmTrendChart = new Chart(document.getElementById('bpmTrendChart'), {
     type: 'line',
     data: { labels: Array(30).fill(''), datasets: [{ data: [], borderColor: '#ff4757', tension: 0.4, pointRadius: 0 }] },
     options: commonOptions
   });
 
+  // 3. Biểu đồ xu hướng SpO2
+  if (spo2TrendChart) spo2TrendChart.destroy();
   spo2TrendChart = new Chart(document.getElementById('spo2TrendChart'), {
     type: 'line',
     data: { labels: Array(30).fill(''), datasets: [{ data: [], borderColor: '#3498db', tension: 0.4, pointRadius: 0 }] },
@@ -230,33 +258,24 @@ const initTrendCharts = () => {
   });
 };
 
-const updateTrendCharts = (data) => {
-  if (!bpmTrendChart || !spo2TrendChart) return;
-  [bpmTrendChart, spo2TrendChart].forEach((chart, i) => {
-    const val = i === 0 ? data.bpm : data.spo2;
-    chart.data.datasets[0].data.push(val);
-    if (chart.data.datasets[0].data.length > 30) chart.data.datasets[0].data.shift();
-    chart.update('none');
-  });
-};
+const updateAllCharts = (data) => {
+  // Cập nhật biểu đồ IR (Sóng tức thời)
+  if (irChart) {
+    irChart.data.datasets[0].data.push(data.ir);
+    if (irChart.data.datasets[0].data.length > 100) irChart.data.datasets[0].data.shift();
+    irChart.update('none');
+  }
 
-const initECG = () => {
-  if (ecgChart) ecgChart.destroy();
-  const ctx = document.getElementById('ecgCanvas');
-  ecgChart = new Chart(ctx, {
-    type: 'line',
-    data: { labels: Array(100).fill(''), datasets: [{ data: Array(100).fill(0), borderColor: '#2ecc71', borderWidth: 2, pointRadius: 0, tension: 0.4 }] },
-    options: { responsive: true, maintainAspectRatio: false, animation: false, scales: { y: { min: -1, max: 2, grid: { color: 'rgba(255,0,0,0.1)' } }, x: { display: false } }, plugins: { legend: { display: false } } }
-  });
+  // Cập nhật biểu đồ xu hướng (BPM & SpO2)
+  if (bpmTrendChart && spo2TrendChart) {
+    bpmTrendChart.data.datasets[0].data.push(data.bpm);
+    if (bpmTrendChart.data.datasets[0].data.length > 30) bpmTrendChart.data.datasets[0].data.shift();
+    bpmTrendChart.update('none');
 
-  if (ecgInterval) clearInterval(ecgInterval);
-  ecgInterval = setInterval(() => {
-    let nextVal = ecgPattern[patternIdx] + (Math.random() * 0.1 - 0.05);
-    patternIdx = (patternIdx + 1) % ecgPattern.length;
-    ecgChart.data.datasets[0].data.push(nextVal);
-    ecgChart.data.datasets[0].data.shift();
-    ecgChart.update('none');
-  }, 60);
+    spo2TrendChart.data.datasets[0].data.push(data.spo2);
+    if (spo2TrendChart.data.datasets[0].data.length > 30) spo2TrendChart.data.datasets[0].data.shift();
+    spo2TrendChart.update('none');
+  }
 };
 
 // --- LỊCH SỬ CLOUD ---
@@ -270,7 +289,7 @@ const saveSnapshot = async () => {
       timestamp: new Date().toLocaleString(),
       timestampRaw: new Date()
     });
-    alert("Đã lưu hồ sơ bệnh án!");
+    alert("Đã lưu hồ sơ bệnh án thành công!");
   } catch (e) { alert("Lỗi: " + e.message); }
 };
 
@@ -287,23 +306,21 @@ const fetchHistory = async () => {
 const showMonitor = async () => {
   currentTab.value = 'monitor';
   await nextTick();
-  initECG();
-  initTrendCharts();
+  initCharts();
   syncSession();
 };
 
 watch(isLoggedIn, async (val) => {
   if (val) {
     await nextTick();
-    initECG();
-    initTrendCharts();
+    initCharts();
+    syncSession();
   }
 });
-
-onUnmounted(() => { if (ecgInterval) clearInterval(ecgInterval); });
 </script>
 
 <style scoped>
+/* Giữ nguyên các Style đẹp của bạn */
 .hospital-dashboard { display: flex; height: 100vh; width: 100vw; background: #f1f2f6; overflow: hidden; }
 .sidebar { width: 280px; background: #2f3542; color: white; display: flex; flex-direction: column; flex-shrink: 0; }
 .sidebar-header { padding: 20px; border-bottom: 1px solid #57606f; }
@@ -327,7 +344,7 @@ onUnmounted(() => { if (ecgInterval) clearInterval(ecgInterval); });
 .bpm .value { color: #ff4757; } .spo2 .value { color: #3498db; } .temp .value { color: #ffa502; }
 .motion-detected { background: #e8f8f5; border: 1px solid #2ecc71; }
 .main-ecg { background: white; padding: 15px; border-radius: 12px; }
-.ecg-canvas-wrapper { height: 250px; width: 100%; background-color: #fffafa; background-image: linear-gradient(rgba(255,0,0,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,0,0,0.05) 1px, transparent 1px); background-size: 20px 20px; border: 1px solid #ffdada; }
+.ecg-canvas-wrapper { height: 250px; width: 100%; background-color: #fffafa; background-image: linear-gradient(rgba(0,0,0,0.02) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.02) 1px, transparent 1px); background-size: 20px 20px; border: 1px solid #eee; }
 .trend-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
 .chart-box { background: white; padding: 15px; border-radius: 12px; height: 180px; }
 .history-table { width: 100%; border-collapse: collapse; background: white; }
