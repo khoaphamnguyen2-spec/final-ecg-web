@@ -1,44 +1,36 @@
 name: Deploy to Cloudflare Pages
-
 on:
   push:
     branches:
-      - main # Nếu nhánh git của bạn tên là 'master' thì đổi chữ 'main' thành 'master' nhé
-
+      - main
 permissions:
   contents: read
   id-token: write
-
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20' # Dùng Node 20 cực kỳ ổn định cho Vite
-
+          node-version: '20'
       - name: Install dependencies
         run: npm install
-
       - name: Build Project
         run: npm run build
         env:
-          # ÉP GITHUB LẤY MẬT KHẨU TỪ KÉT SẮT RA ĐỂ BUILD VITE
           VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
           VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
           VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
           VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
           VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
           VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
-
       - name: Publish to Cloudflare Pages
         uses: cloudflare/pages-action@v1
         with:
           apiToken: ${{ secrets.CLOUDFLARE_PAGES_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          projectName: 'plain-union-8aef' # <-- CHÚ Ý: BẠN PHẢI SỬA DÒNG NÀY
-          directory: './dist' # Vite build ra thư mục dist là chuẩn rồi
+          projectName: 'plain-union-8aef'
+          directory: './dist'
